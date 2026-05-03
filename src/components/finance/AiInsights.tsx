@@ -41,6 +41,8 @@ interface MultiAgentResponse {
   decision?: BotPayload;
   final?: BotPayload;
   latency_seconds?: number;
+  error?: string;
+  type?: string;
   validation?: {
     bot_failure_test_enabled?: boolean;
     debug_mode?: boolean;
@@ -73,6 +75,7 @@ const BOT_ORDER: Array<{ key: BotKey; title: string; flowLabel: string; icon: ty
 export function AiInsights({ kpis }: { kpis: Kpis }) {
   const [data, setData] = useState<MultiAgentResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [requestError, setRequestError] = useState<string | null>(null);
   const [debugMode, setDebugMode] = useState(false);
   const [simulateTreasuryFailure, setSimulateTreasuryFailure] = useState(false);
   const [researchOverride, setResearchOverride] = useState("");
@@ -84,6 +87,7 @@ export function AiInsights({ kpis }: { kpis: Kpis }) {
   const fetchInsights = async () => {
     setLoading(true);
     setData(null);
+    setRequestError(null);
     try {
       const response = await fetch(`${apiBaseUrl}/run`, {
         method: "POST",
@@ -109,9 +113,16 @@ export function AiInsights({ kpis }: { kpis: Kpis }) {
       }
 
       const payload = (await response.json()) as MultiAgentResponse;
-      setData(payload);
+      const normalized = normalizeResponse(payload);
+      setData(normalized);
+
+      if (normalized.error) {
+        setRequestError(normalized.error);
+      }
     } catch (error) {
       console.error(error);
+      const message = error instanceof Error ? error.message : "Failed to run multi-agent pipeline.";
+      setRequestError(message);
       toast.error("Failed to run multi-agent pipeline.");
     } finally {
       setLoading(false);
@@ -201,6 +212,13 @@ export function AiInsights({ kpis }: { kpis: Kpis }) {
         </div>
       </Card>
 
+      {requestError && (
+        <Card className="border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive shadow-[var(--shadow-card)]">
+          <div className="font-semibold">Backend response issue</div>
+          <div className="mt-1 whitespace-pre-wrap">{requestError}</div>
+        </Card>
+      )}
+
       {loading && (
         <div className="grid gap-4 lg:grid-cols-2">
           {BOT_ORDER.map((bot) => (
@@ -219,6 +237,15 @@ export function AiInsights({ kpis }: { kpis: Kpis }) {
             return <BotPanel key={bot.key} title={bot.title} icon={bot.icon} payload={payload} debugMode={debugMode} />;
           })}
         </div>
+      )}
+
+      {!loading && data && !requestError && (
+        <Card className="p-4 text-sm shadow-[var(--shadow-card)]">
+          <div className="font-semibold">Pipeline Summary</div>
+          <div className="mt-2 whitespace-pre-wrap text-muted-foreground">
+            {executionFlow.length ? `Completed: ${executionFlow.join(" → ")}` : "No execution flow returned."}
+          </div>
+        </Card>
       )}
 
       {!loading && finalDecision && (
@@ -256,6 +283,44 @@ function getBotPayload(data: MultiAgentResponse, key: BotKey): BotPayload | unde
 
     const payloadFromTopLevel = data[candidate as keyof MultiAgentResponse];
     if (payloadFromTopLevel) return payloadFromTopLevel as BotPayload;
+  }
+
+  return undefined;
+}
+
+function normalizeResponse(raw: MultiAgentResponse): MultiAgentResponse {
+  const normalized: MultiAgentResponse = {
+    execution_flow: Array.isArray(raw.execution_flow) ? raw.execution_flow : [],
+    latency_seconds: raw.latency_seconds,
+    validation: raw.validation,
+    error: raw.error,
+    type: raw.type,
+  };
+
+  const normalizedOutputs: Partial<Record<BotKey, BotPayload>> = {};
+
+  BOT_ORDER.forEach((bot) => {
+    const payload = getPayloadFromRaw(raw, bot.key);
+    if (payload) {
+      normalizedOutputs[bot.key] = payload;
+      normalized[bot.key] = payload;
+    }
+  });
+
+  normalized.bot_outputs = normalizedOutputs;
+  return normalized;
+}
+
+function getPayloadFromRaw(raw: MultiAgentResponse, key: BotKey): BotPayload | undefined {
+  const candidateValues = BOT_RESPONSE_KEYS[key];
+  const rawBotOutputs = raw.bot_outputs as Record<string, BotPayload | undefined> | undefined;
+
+  for (const candidate of candidateValues) {
+    const fromMap = rawBotOutputs?.[candidate];
+    if (fromMap) return fromMap;
+
+    const fromTopLevel = raw[candidate as keyof MultiAgentResponse];
+    if (fromTopLevel) return fromTopLevel as BotPayload;
   }
 
   return undefined;
