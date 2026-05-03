@@ -5,21 +5,32 @@ from __future__ import annotations
 import json
 import os
 import time
+from pathlib import Path
 from typing import Any, Literal
 
-from dotenv import load_dotenv
+import httpx
+from dotenv import dotenv_values, load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from groq import Groq
 from pydantic import BaseModel, Field
 
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENV_PATHS = [
+    PROJECT_ROOT / ".env",
+    Path.cwd() / ".env",
+]
+
+for env_path in ENV_PATHS:
+    load_dotenv(dotenv_path=env_path, override=False)
 
 
 MODEL_NAME = "openai/gpt-oss-120b"
 TEMPERATURE = 0.3
-MAX_COMPLETION_TOKENS = 4096
+MAX_COMPLETION_TOKENS = 1024
 TOP_P = 1
+GROQ_TIMEOUT = 30  # 30 second timeout for Groq API calls
+RUN_TIMEOUT = 120  # 120 second total timeout for /run endpoint
 
 
 class FinanceInput(BaseModel):
@@ -36,10 +47,20 @@ class FinanceInput(BaseModel):
 
 
 def _require_api_key() -> str:
-    api_key = os.getenv("Master_AI")
-    if not api_key:
-        raise RuntimeError("Master_AI is not configured")
-    return api_key
+    for env_path in ENV_PATHS:
+        if env_path.exists():
+            values = dotenv_values(env_path)
+            api_key = values.get("Master_AI") or values.get("GROQ_API_KEY")
+            if api_key:
+                os.environ.setdefault("Master_AI", api_key)
+                return api_key
+
+    api_key = os.getenv("Master_AI") or os.getenv("GROQ_API_KEY")
+    if api_key:
+        return api_key
+
+    searched = ", ".join(str(path) for path in ENV_PATHS)
+    raise RuntimeError(f"Master_AI is not configured. Checked: {searched}")
 
 
 def log_bot(bot_name: str) -> None:
@@ -71,7 +92,8 @@ def _extract_json_payload(text: str) -> Any:
 
 def call_groq(prompt: str) -> str:
     api_key = _require_api_key()
-    client = Groq(api_key=api_key)
+    timeout = httpx.Timeout(GROQ_TIMEOUT)
+    client = Groq(api_key=api_key, timeout=timeout)
     completion = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[{"role": "user", "content": prompt}],
@@ -417,6 +439,7 @@ def health() -> dict[str, str]:
 def run_pipeline(payload: FinanceInput) -> dict[str, Any]:
     try:
         start = time.perf_counter()
+        print(f"[{time.strftime('%H:%M:%S')}] 🔄 Starting pipeline...")
         input_data = payload.model_dump()
 
         if payload.research_override is not None:
@@ -427,6 +450,7 @@ def run_pipeline(payload: FinanceInput) -> dict[str, Any]:
 
         result = run_full_system(input_data)
         latency_seconds = round(time.perf_counter() - start, 3)
+        print(f"[{time.strftime('%H:%M:%S')}] ✅ Pipeline complete in {latency_seconds}s")
         result["latency_seconds"] = latency_seconds
         result["validation"] = {
             "bot_failure_test_enabled": payload.simulate_treasury_failure,
@@ -435,4 +459,7 @@ def run_pipeline(payload: FinanceInput) -> dict[str, Any]:
         }
         return result
     except Exception as exc:
+        print(f"[{time.strftime('%H:%M:%S')}] ❌ Error: {type(exc).__name__}: {exc}")
+        import traceback
+        traceback.print_exc()
         return {"error": str(exc), "type": type(exc).__name__}

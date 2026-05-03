@@ -48,6 +48,17 @@ interface MultiAgentResponse {
   };
 }
 
+const BOT_RESPONSE_KEYS: Record<BotKey, string[]> = {
+  research: ["research", "research_ai"],
+  planning: ["planning", "planning_ai"],
+  accounting: ["accounting", "accounting_ai"],
+  treasury: ["treasury", "treasury_ai"],
+  compliance: ["compliance", "compliance_ai"],
+  reporting: ["reporting", "reporting_ai"],
+  decision: ["decision", "decision_ai"],
+  final: ["final", "chief_command_ai"],
+};
+
 const BOT_ORDER: Array<{ key: BotKey; title: string; flowLabel: string; icon: typeof BrainCircuit }> = [
   { key: "research", title: "Research AI Output", flowLabel: "Research AI", icon: Sparkles },
   { key: "planning", title: "Planning AI Output", flowLabel: "Planning AI", icon: BrainCircuit },
@@ -204,7 +215,7 @@ export function AiInsights({ kpis }: { kpis: Kpis }) {
       {!loading && data && (
         <div className="grid gap-4 lg:grid-cols-2">
           {BOT_ORDER.map((bot) => {
-            const payload = data.bot_outputs?.[bot.key] ?? data[bot.key];
+            const payload = getBotPayload(data, bot.key);
             return <BotPanel key={bot.key} title={bot.title} icon={bot.icon} payload={payload} debugMode={debugMode} />;
           })}
         </div>
@@ -237,6 +248,19 @@ export function AiInsights({ kpis }: { kpis: Kpis }) {
   );
 }
 
+function getBotPayload(data: MultiAgentResponse, key: BotKey): BotPayload | undefined {
+  for (const candidate of BOT_RESPONSE_KEYS[key]) {
+    const botOutputs = data.bot_outputs as Record<string, BotPayload | undefined> | undefined;
+    const payloadFromMap = botOutputs?.[candidate];
+    if (payloadFromMap) return payloadFromMap;
+
+    const payloadFromTopLevel = data[candidate as keyof MultiAgentResponse];
+    if (payloadFromTopLevel) return payloadFromTopLevel as BotPayload;
+  }
+
+  return undefined;
+}
+
 function BotPanel({
   title,
   icon: Icon,
@@ -265,12 +289,12 @@ function BotPanel({
 
       {payload ? (
         debugMode ? (
-          <pre className="max-h-80 overflow-auto rounded-lg bg-muted/40 p-4 text-xs leading-relaxed">
+          <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/40 p-4 text-xs leading-relaxed">
             {JSON.stringify(payload, null, 2)}
           </pre>
         ) : (
           <div className="space-y-2 text-sm leading-relaxed text-foreground">
-            <div className="rounded-lg bg-muted/40 p-3">{renderCleanValue(payload.output)}</div>
+            <div className="rounded-lg bg-muted/40 p-3 whitespace-pre-wrap">{renderCleanValue(payload.output)}</div>
           </div>
         )
       ) : (
